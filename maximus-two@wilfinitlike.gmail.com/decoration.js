@@ -48,7 +48,7 @@ function guessWindowXID(win) {
 
 	// use xwininfo, take first child.
 	let act = win.get_compositor_private();
-	if (act) {
+	if (act && act['x-window']) {
 		let xwininfo = GLib.spawn_command_line_sync('xwininfo -children -id 0x%x'.format(act['x-window']));
 		if (xwininfo[0]) {
 			let str = xwininfo[1].toString();
@@ -134,12 +134,16 @@ function getOriginalState(win) {
  * @param {Meta.Window} win - window to set the HIDE_TITLEBAR_WHEN_MAXIMIZED property of.
  * @param {boolean} hide - whether to hide the titlebar or not.
  */
-function setHideTitlebar(win, hide) {
+function setHideTitlebar(win, hide, id) {
 	LOG('setHideTitlebar: ' + win.get_title() + ': ' + hide);
 
 	// Make sure we save the state before altering it.
 	getOriginalState(win);
 
+	_doHideTitlebar(win, hide, id);
+}
+
+function _doHideTitlebar(win, hide, id) {
 	/* Undecorate with xprop. Use _GTK_HIDE_TITLEBAR_WHEN_MAXIMIZED.
 	 * See (eg) mutter/src/window-props.c
 	 */
@@ -149,6 +153,14 @@ function setHideTitlebar(win, hide) {
 	           (hide ? '0x1' : '0x0')];
 	LOG(cmd.join(' '));
 
+	// fallback: if couldn't get id for some reason, use the window's name
+	if (!id) {
+		cmd[1] = '-name';
+		cmd[2] = win.get_title();
+		WARN('set by window title');
+	}
+	LOG(cmd.join(' '));
+	
 	// Run xprop
 	[success, pid] = GLib.spawn_async(
 		null,
@@ -168,8 +180,8 @@ function setHideTitlebar(win, hide) {
 		const MAXIMIZED = Meta.MaximizeFlags.BOTH;
 		let flags = win.get_maximized();
 		if (flags == MAXIMIZED) {
-			win.unmaximize(MAXIMIZED);
-			win.maximize(MAXIMIZED);
+			win.unmaximize(Meta.MaximizeFlags.BOTH);
+			win.maximize(Meta.MaximizeFlags.BOTH);
 		}
 	});
 }
@@ -204,17 +216,20 @@ function onWindowAdded(ws, win) {
 	 * (see workspace.js _doAddWindow)
 	 */
 	if (!win.get_compositor_private()) {
-		Mainloop.idle_add(function () {
-			onWindowAdded(ws, win);
-			return false;
+		Mainloop.timeout_add(20, function () {
+			if(win.get_compositor_private()) {
+				onWindowAdded(ws, win);
+				return false;
+			}
+			return true;
 		});
 		return false;
 	}
 
 	let retry = 3;
-	Mainloop.idle_add(function () {
+	Mainloop.timeout_add(20, function () {
 		let id = guessWindowXID(win);
-		if (!id) {
+		if (!id && retry > 0) {
 			if (--retry) {
 				return true;
 			}
@@ -224,7 +239,7 @@ function onWindowAdded(ws, win) {
 		}
 
 		LOG('onWindowAdded: ' + win.get_title());
-		setHideTitlebar(win, true);
+		setHideTitlebar(win, true, id);
 		return false;
 	});
 
